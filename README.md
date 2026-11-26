@@ -1,4 +1,4 @@
-# EcoCash Payment SDK
+# EcoCash SDK
 
 A typed Node.js SDK for the EcoCash developer APIs:
 
