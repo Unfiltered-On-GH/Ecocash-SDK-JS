@@ -11,8 +11,9 @@ Rewrite for the new EcoCash developer APIs. Not compatible with 1.x; see "Migrat
 - Built-in EPG password encryption (`encryptPassword`), or bring your own.
 - Typed error classes chosen by EcoCash error code, each with `code`, `httpStatus`, `body` and `retryable`.
 - A `Result` type on every call, with `reference` always set, also on failure.
+- Instant Payments responses with HTTP 200 but no transaction are failures: `{ messageId, text }` bodies (SVC0270 is a `RefundNotAllowedError`) and all-null lookups (`TransactionNotFoundError`). Checked against the sandbox.
 - Charge timeout recovery: one lookup instead of a resend.
-- Optional EPG retries on timeouts and 5xx, which is safe because EPG is idempotent on `externalReference`.
+- Optional EPG retries on timeouts and 5xx. EPG rejects a reused `externalReference` (`DuplicateReferenceError`), so a resend cannot pay twice; if a resend is rejected as a duplicate, the SDK returns the original transaction from a lookup with `recovered: true`. Checked against the sandbox.
 - Input validation before sending: phone number formats, amount, currency and required fields.
 - Normalised EPG responses (`timestamp`, numeric `status`, string `externalReference`, `receiverNumber`), with the original body in `raw`.
 - Configurable timeout (30 seconds by default).

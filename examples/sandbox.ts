@@ -93,7 +93,9 @@ async function epg(msisdn: string): Promise<void> {
     console.log("EPG: skipped (fill in ECOCASH_CLIENT_ID and ECOCASH_CLIENT_SECRET)");
     return;
   }
-  const canMoveFunds = has("ECOCASH_API_USERNAME", "ECOCASH_API_PASSWORD", "ECOCASH_ENCRYPTION_KEY");
+  const canMoveFunds =
+    has("ECOCASH_API_USERNAME", "ECOCASH_API_ENCRYPTED_PASSWORD") ||
+    has("ECOCASH_API_USERNAME", "ECOCASH_API_PASSWORD", "ECOCASH_ENCRYPTION_KEY");
 
   const client = new EpgClient({
     environment: env("ECOCASH_ENV") === "live" ? "live" : "sandbox",
@@ -102,13 +104,14 @@ async function epg(msisdn: string): Promise<void> {
     username: env("ECOCASH_API_USERNAME") || undefined,
     password: env("ECOCASH_API_PASSWORD") || undefined,
     encryptionKey: env("ECOCASH_ENCRYPTION_KEY") || undefined,
+    encryptedPassword: env("ECOCASH_API_ENCRYPTED_PASSWORD") || undefined,
     terminalId: env("ECOCASH_TERMINAL_ID") || "TestTerminal001",
     merchantName: env("ECOCASH_MERCHANT_NAME") || "Test Merchant",
   });
 
   console.log("EPG services");
   if (!canMoveFunds) {
-    console.log("  skip funds services (fill in ECOCASH_API_USERNAME, ECOCASH_API_PASSWORD, ECOCASH_ENCRYPTION_KEY)");
+    console.log("  skip funds services (fill in ECOCASH_API_USERNAME and ECOCASH_API_ENCRYPTED_PASSWORD, or ECOCASH_API_PASSWORD with ECOCASH_ENCRYPTION_KEY)");
   } else {
     const cashIn = await client.cashIn({ phoneNumber: msisdn, amount: 1, currency: "USD", beneficiaryReference: "SDKTest" });
     show("cashIn", cashIn);

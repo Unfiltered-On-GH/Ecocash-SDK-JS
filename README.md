@@ -15,14 +15,16 @@ npm install ecocash-payment-sdk
 
 ## Credentials
 
-Sign in to the [EcoCash Developer Portal](https://developers.ecocash.co.zw/) and request sandbox access for each product. The two products use different credentials.
+Get them from the [EcoCash Developer Portal](https://developers.ecocash.co.zw/) under **Products**. You will be asked to set up an OTP with an authenticator app. You only need the product whose features you use.
 
-| Product | Credentials | Where they go |
+| From | SDK option | Needed for |
 |---|---|---|
-| Online Payments | Basic auth username and password, merchant code, PIN, number, terminal ID, location, merchant and super merchant name | `new OnlinePayments({...})` |
-| EPG services | `X-Client-Id`, `X-Client-Secret`, channel API username, password and encryption key | `new EpgClient({...})` |
+| **Instant Payments** | `username`, `password` | Every `OnlinePayments` call |
+| Your merchant details | `merchantCode`, `merchantPin`, `merchantNumber`, `terminalId`, `location`, `merchantName`, `superMerchantName` | `charge`, `refund`, `reverse` (any value in the sandbox) |
+| **Payment Gateway** | `clientId`, `clientSecret` | Every `EpgClient` call |
+| Payment Gateway, **Channel API User** | `username`, plus `encryptedPassword` from **Generate** (or [`password` + `encryptionKey`](#password-encryption)) | `cashIn`, `disburseChange`, `merchantToSubscriber` |
 
-Keep credentials in environment variables, never in code. This repository has a `.env.example` you can copy to `.env` (which is gitignored).
+Keep credentials out of code. Copy `.env.example` to `.env` (gitignored), and put any value that contains `#` in double quotes.
 
 ## Online Payments
 
@@ -83,8 +85,8 @@ const epg = new EpgClient({
   clientId: process.env.ECOCASH_CLIENT_ID!,
   clientSecret: process.env.ECOCASH_CLIENT_SECRET!,
   username: process.env.ECOCASH_API_USERNAME!,
-  password: process.env.ECOCASH_API_PASSWORD!, // plain; encrypted on every request
-  encryptionKey: process.env.ECOCASH_ENCRYPTION_KEY!,
+  encryptedPassword: process.env.ECOCASH_API_ENCRYPTED_PASSWORD!, // from "Generate" on the portal
+  // or: password + encryptionKey, and the SDK encrypts on every request
   terminalId: "TestTerminal001", // default for disburseChange
   merchantName: "Test Merchant", // default for disburseChange
   retries: 1, // optional; see "Retries and idempotency"
@@ -110,11 +112,11 @@ const result = await epg.cashIn({
 - `phoneNumber` is `263XXXXXXXXX` or `07XXXXXXXX`.
 - Override channel codes with `channelCodes: { cashIn, disburseChange, merchantToSubscriber }` and the wallet with `walletId` (default `"12"`).
 - `merchantToSubscriber` sends `externalReference` as a number, so its `reference` must be digits only. Generated references always are.
-- `lookupTransaction` needs only `clientId` and `clientSecret`. `result.reference` is the reference of the transaction you looked up.
+- `lookupTransaction` needs only `clientId` and `clientSecret`. Pass the `externalReference` you sent, which is `result.reference` from the original call. The lookup's own `result.reference` is that same reference.
 
 ### Password encryption
 
-EPG requires the channel API user's password to be encrypted. Give the SDK the plain `password` and `encryptionKey` and it encrypts on every request, using the portal's method: AES-128-GCM with a key taken from the first 16 bytes of the SHA-1 of the encryption key, a random 12-byte IV, and Base64 of IV + cipher text + tag.
+EPG requires the channel API user's password to be encrypted. The simplest way is to click **Generate** on the portal and pass the result as `encryptedPassword`. Or give the SDK the plain `password` and `encryptionKey` and it encrypts on every request, using the portal's method: AES-128-GCM with a key taken from the first 16 bytes of the SHA-1 of the encryption key, a random 12-byte IV, and Base64 of IV + cipher text + tag.
 
 You can also pass `encryptedPassword` (sent as is) or your own `encryptPassword: (password) => string`. The helper is exported as `encryptPassword(password, encryptionKey)`.
 
@@ -150,9 +152,9 @@ Match on the error class or `error.code`, not on `error.message`. Every error ha
 |---|---|---|
 | `AuthenticationError` | E006, E007, SBX40100, TP40101, other 401/403 | no |
 | `ValidationError` | E001–E004, SBX40000, `CLIENT_VALIDATION` (checked before sending) | no |
-| `DuplicateReferenceError` | E005 | no |
-| `TransactionNotFoundError` | E008, 888803, other 404 | no |
-| `RefundNotAllowedError` | E009, E012 | no |
+| `DuplicateReferenceError` | E005, EPG "non unique externalReference" (400) | no |
+| `TransactionNotFoundError` | E008, 888803, other 404, an empty lookup | no |
+| `RefundNotAllowedError` | E009, E012, SVC0270 | no |
 | `BusinessRuleError` | E010, E011, E013, other 422 | no |
 | `InvalidChannelCodeError` | TP40288 | no |
 | `RecipientNotWhitelistedError` | IC50103 | no |
@@ -160,7 +162,7 @@ Match on the error class or `error.code`, not on `error.message`. Every error ha
 | `GatewayError` | A sandbox gateway message with no code, e.g. sandbox access not enabled | no |
 | `NetworkError` | Timeout or no response (`timedOut` tells which) | yes |
 
-All classes extend `EcoCashError`. E009 arrives as HTTP 401 but is a `RefundNotAllowedError`, not an authentication failure.
+All classes extend `EcoCashError`. An error with no known code is a plain `EcoCashError`. E009 arrives as HTTP 401 but is a `RefundNotAllowedError`, not an authentication failure.
 
 ## Retries and idempotency
 
@@ -171,7 +173,7 @@ The two products behave differently, so the SDK does too.
 - If the lookup finds it, you get `success: true` with `recovered: true`.
 - If not, you get the `NetworkError`. The charge may still complete; call `lookup()` later with `result.reference`, or wait for the `notifyUrl` callback.
 
-**EPG is idempotent on `externalReference`.** Resending the same reference returns the original transaction. Set `retries` (default 0) to resend automatically after a timeout or 5xx. Other errors are never retried.
+**EPG rejects a reused `externalReference`** with a 400 ("non unique externalReference"), which the SDK reports as `DuplicateReferenceError`. So a resend can never pay twice. Set `retries` (default 0) to resend automatically after a timeout or 5xx. If the resend is rejected as a duplicate, the first attempt went through: the SDK looks the transaction up and returns it with `recovered: true`. `data` is then the lookup's response, with `transactionId` and your reference in `externalTransactionId`. Other errors are never retried.
 
 The default timeout is 30 seconds. Change it with `timeoutMs`.
 
@@ -182,16 +184,18 @@ Sandbox URLs are built in:
 - Online Payments: `https://developers.ecocash.co.zw/sandbox/payment/v1`
 - EPG: `https://developers.ecocash.co.zw/api/serviceRequest`
 
-In the Online Payments sandbox the merchant PIN selects the outcome:
+What the Online Payments sandbox actually does (tested November 2026):
 
-| PIN | Outcome |
+- `charge()` returns `status: "PENDING SUBSCRIBER VALIDATION"` straight away, with no `ecocashReference`. The customer gets a prompt on their handset. After they approve, `lookup()` returns `status: "COMPLETED"` and the `ecocashReference` (e.g. `MP261126.2033.T4304965`) that you need for `refund()`. Treat a charge as paid only once you see `COMPLETED`, from `lookup()` or your `notifyUrl`.
+- EcoCash's docs say the merchant PIN selects the outcome (0000 success, 1111 E010, 2222 E006, 9999 E013). In our tests it did not: a charge with PIN 1111 still completed.
+- Many errors arrive as HTTP 200 with `{ messageId, text }`. The SDK turns them into failures:
+
+| Sandbox response | SDK result |
 |---|---|
-| 0000 | Success |
-| 1111 | E010 |
-| 2222 | E006 |
-| 9999 | E013 |
-
-EcoCash notes this matrix is not verified against UAT.
+| `{ messageId: "SVC0270", text: "Reversal amount exceeds allowed amount." }` | `RefundNotAllowedError`, code `SVC0270` |
+| `{ messageId: "SVC0270", text: "...reference could not be found." }` | `RefundNotAllowedError`, code `SVC0270` |
+| `{ messageId: "<your reference>", text: "Transaction processing failed" }` (e.g. a reused reference) | `EcoCashError`, no code |
+| Lookup of an unknown reference: 200 with every field `null` | `TransactionNotFoundError` |
 
 To try everything against the sandbox from this repository:
 
