@@ -208,6 +208,40 @@ describe("Instant Payment error mapping", () => {
     expect(!result.success && result.error instanceof BusinessRuleError).toBe(true);
   });
 
+  it("returns a pending charge as success, as the sandbox does", async () => {
+    const pending = {
+      clientCorrelator: "597666533499059",
+      transactionOperationStatus: "PENDING SUBSCRIBER VALIDATION",
+      text: "Transaction is pending subscriber validation",
+    };
+    const { api } = client([{ status: 200, data: pending }]);
+    const result = await api.charge({ phoneNumber: TEST_PHONE, amount: 1, currency: "USD", description: "x", reference: "597666533499059" });
+    expect(result.success && result.data.status).toBe("PENDING SUBSCRIBER VALIDATION");
+  });
+
+  it("maps a 200 { messageId: SVC0270, text } refund rejection to RefundNotAllowedError", async () => {
+    const body = { messageId: "SVC0270", text: "Reversal amount exceeds allowed amount." };
+    const { api } = client([{ status: 200, data: body }]);
+    const result = await api.refund({ originalEcocashReference: "MP1", phoneNumber: TEST_PHONE, amount: 2, currency: "USD", description: "x" });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBeInstanceOf(RefundNotAllowedError);
+    expect(result.error.code).toBe("SVC0270");
+    expect(result.error.httpStatus).toBe(200);
+    expect(result.error.message).toBe("Reversal amount exceeds allowed amount.");
+  });
+
+  it("maps a 200 { messageId: <reference>, text } to a failure without a code", async () => {
+    const body = { messageId: "597666533499059", text: "Transaction processing failed" };
+    const { api } = client([{ status: 200, data: body }]);
+    const result = await api.charge({ phoneNumber: TEST_PHONE, amount: 1, currency: "USD", description: "x", reference: "597666533499059" });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBeInstanceOf(EcoCashError);
+    expect(result.error.code).toBeUndefined();
+    expect(result.error.message).toBe("Transaction processing failed");
+  });
+
   it("maps a sandbox gateway message without a code", async () => {
     const { api } = client([{ status: 400, data: { message: "Enable EIP sandbox access" } }]);
     const result = await api.charge({ phoneNumber: TEST_PHONE, amount: 1, currency: "USD", description: "x" });
@@ -225,6 +259,15 @@ describe("Instant Payment error mapping", () => {
 });
 
 describe("lookup", () => {
+  it("maps an all-null 200 body to TransactionNotFoundError", async () => {
+    const { api } = client([{ status: 200, data: { id: null, clientCorrelator: null, transactionOperationStatus: null, text: null, messageId: null } }]);
+    const result = await api.lookup({ phoneNumber: TEST_PHONE, reference: "000000000000001" });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBeInstanceOf(TransactionNotFoundError);
+    expect(result.reference).toBe("000000000000001");
+  });
+
   it("GETs by phone and reference", async () => {
     const { api, requests } = client([{ status: 200, data: charged("444") }]);
     const result = await api.lookup({ phoneNumber: TEST_PHONE, reference: "444" });

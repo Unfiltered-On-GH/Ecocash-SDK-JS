@@ -1,6 +1,6 @@
 import { HttpClient } from "../core/http";
 import { DEFAULT_TIMEOUT_MS, requireConfig, resolveBaseURL } from "../core/config";
-import { EcoCashError, errorFromResponse, toEcoCashError } from "../core/errors";
+import { DuplicateReferenceError, EcoCashError, errorFromResponse, toEcoCashError } from "../core/errors";
 import { encryptPassword } from "../core/crypto";
 import { normalizeEpg } from "../core/normalize";
 import { generateReference } from "../core/reference";
@@ -21,6 +21,8 @@ import {
   MerchantToSubscriberRequest,
   TransactionLookupRequest,
 } from "../types";
+
+type LookupCurrency = TransactionLookupRequest["currency"];
 
 export const EPG_SANDBOX_URL = "https://developers.ecocash.co.zw/api";
 
@@ -68,7 +70,7 @@ export class EpgClient {
       ...this.credentials(),
       channelCode: this.channelCode("cashIn"),
       walletId: this.config.walletId ?? "12",
-    }));
+    }), request);
   }
 
   /** Disburse Change: send a customer their change from a till. */
@@ -85,7 +87,7 @@ export class EpgClient {
       terminalId: requireString("terminalId", request.terminalId ?? this.config.terminalId),
       channelCode: this.channelCode("disburseChange"),
       merchantName: requireString("merchantName", request.merchantName ?? this.config.merchantName),
-    }));
+    }), request);
   }
 
   /** Merchant to Subscriber: pay a customer from a merchant wallet. The reference must be digits only. */
@@ -101,7 +103,7 @@ export class EpgClient {
       channelCode: this.channelCode("merchantToSubscriber"),
       transferReference: request.transferReference ?? reference,
       walletId: this.config.walletId ?? "12",
-    }));
+    }), request);
   }
 
   /**
@@ -142,10 +144,17 @@ export class EpgClient {
 
   /**
    * Builds the body, sends it, and resends on retryable errors up to `retries` times.
-   * Resending is safe because EPG returns the original transaction for a repeated
-   * externalReference. Config errors from building the body are thrown, not returned.
+   *
+   * EPG is not idempotent: it rejects a reused externalReference with a 400. A resend
+   * still cannot pay twice, but if the first attempt went through, the resend fails with
+   * DuplicateReferenceError. In that case the SDK looks the transaction up and returns it
+   * with `recovered: true`. Config errors from building the body are thrown, not returned.
    */
-  private async run(reference: string, build: () => Record<string, unknown>): Promise<Result<EpgTransaction>> {
+  private async run(
+    reference: string,
+    build: () => Record<string, unknown>,
+    recover?: { phoneNumber: string; currency: LookupCurrency }
+  ): Promise<Result<EpgTransaction>> {
     let body: Record<string, unknown>;
     try {
       body = build();
@@ -166,6 +175,11 @@ export class EpgClient {
         return ok(normalizeEpg(data, reference), reference);
       } catch (error) {
         lastError = toEcoCashError(error);
+        if (attempt > 0 && recover && lastError instanceof DuplicateReferenceError) {
+          const found = await this.lookupTransaction({ transactionReference: reference, ...recover });
+          if (found.success) return ok(found.data, reference, true);
+          break;
+        }
         if (!lastError.retryable) break;
       }
     }

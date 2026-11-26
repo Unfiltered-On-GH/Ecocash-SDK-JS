@@ -1,6 +1,7 @@
 import { createDecipheriv, createHash } from "crypto";
 import {
   AuthenticationError,
+  DuplicateReferenceError,
   EcoCashError,
   EpgClient,
   EpgConfig,
@@ -344,6 +345,13 @@ describe("EPG error mapping", () => {
   });
 });
 
+const DUPLICATE = (ref: string) => ({
+  status: 400,
+  exception: "ValidationException",
+  message: `Errors occurred! Invalid or non unique externalReference: ${ref}`,
+  errors: [{ field: "externalReference", error: "Invalid external reference" }],
+});
+
 describe("EPG retries", () => {
   it("does not retry by default", async () => {
     const { epg, requests } = client([{ timeout: true }]);
@@ -362,6 +370,40 @@ describe("EPG retries", () => {
     expect(requests[1].body).toEqual(requests[0].body);
     expect(requests[2].body).toEqual(requests[0].body);
     expect(result.success).toBe(true);
+  });
+
+  it("maps a reused externalReference to DuplicateReferenceError", async () => {
+    const { epg } = client([{ status: 400, data: DUPLICATE("77") }]);
+    const result = await epg.cashIn({ phoneNumber: TEST_MSISDN, amount: 1, currency: "USD", beneficiaryReference: "B", reference: "77" });
+    expect(!result.success && result.error instanceof DuplicateReferenceError).toBe(true);
+  });
+
+  it("after a timeout, a duplicate on resend is recovered with a lookup", async () => {
+    const found = { serviceType: "EXTERNALTRANSACTIONLOOKUP", externalReference: "999", externalTransactionId: "77", transactionId: "CI1", status: "200", statusCode: "TS", responseCode: "00" };
+    const { epg, requests } = client(
+      [{ timeout: true }, { status: 400, data: DUPLICATE("77") }, { status: 200, data: found }],
+      { retries: 1 }
+    );
+    const result = await epg.cashIn({ phoneNumber: TEST_MSISDN, amount: 1, currency: "USD", beneficiaryReference: "B", reference: "77" });
+    expect(requests).toHaveLength(3);
+    const lookup = requests[2].body as Record<string, unknown>;
+    expect(lookup.serviceType).toBe("EXTERNALTRANSACTIONLOOKUP");
+    expect(lookup.externalTransactionId).toBe("77");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.recovered).toBe(true);
+    expect(result.reference).toBe("77");
+    expect(result.data.transactionId).toBe("CI1");
+  });
+
+  it("returns the duplicate error if the recovery lookup finds nothing", async () => {
+    const { epg, requests } = client(
+      [{ timeout: true }, { status: 400, data: DUPLICATE("77") }, { status: 400, data: { responseCode: "888803", message: "No Transaction Found" } }],
+      { retries: 1 }
+    );
+    const result = await epg.cashIn({ phoneNumber: TEST_MSISDN, amount: 1, currency: "USD", beneficiaryReference: "B", reference: "77" });
+    expect(requests).toHaveLength(3);
+    expect(!result.success && result.error instanceof DuplicateReferenceError).toBe(true);
   });
 
   it("returns the last error when retries run out", async () => {

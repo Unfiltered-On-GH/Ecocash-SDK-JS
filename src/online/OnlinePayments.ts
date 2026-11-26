@@ -1,6 +1,12 @@
 import { HttpClient } from "../core/http";
 import { DEFAULT_TIMEOUT_MS, requireConfig, resolveBaseURL } from "../core/config";
-import { NetworkError, ValidationError, errorFromResponse, toEcoCashError } from "../core/errors";
+import {
+  NetworkError,
+  TransactionNotFoundError,
+  ValidationError,
+  errorFromResponse,
+  toEcoCashError,
+} from "../core/errors";
 import { normalizePayment } from "../core/normalize";
 import { generateReference } from "../core/reference";
 import { Result, fail, ok } from "../core/result";
@@ -183,7 +189,12 @@ export class OnlinePayments {
     return body;
   }
 
-  /** A 200 can still carry an error code; treat those as failures. */
+  /**
+   * A 200 is not always a success. EcoCash also uses 200 for:
+   * - an error code (`statusCode` E0xx, or a `responseCode` other than "00");
+   * - `{ messageId, text }` with no transaction, e.g. a rejected refund or a resent reference;
+   * - a lookup of an unknown reference, where every field is null.
+   */
   private toResult(response: InstantPaymentResponseBody, reference: string): Result<Payment> {
     const body: InstantPaymentResponseBody =
       response !== null && typeof response === "object" ? response : {};
@@ -192,6 +203,22 @@ export class OnlinePayments {
     if ((typeof responseCode === "string" && responseCode !== "00") || (typeof statusCode === "string" && /^E\d{3}$/.test(statusCode))) {
       return fail(errorFromResponse(200, body), reference);
     }
+    const isTransaction = hasValue(body.transactionOperationStatus) || hasValue(body.clientCorrelator);
+    if (!isTransaction) {
+      if (hasValue(body.messageId) || hasValue(body.text)) {
+        return fail(errorFromResponse(200, body), reference);
+      }
+      if (responseCode !== "00") {
+        return fail(
+          new TransactionNotFoundError(`No transaction found for reference ${reference}`, { httpStatus: 200, body }),
+          reference
+        );
+      }
+    }
     return ok(normalizePayment(body, reference), reference);
   }
+}
+
+function hasValue(value: unknown): boolean {
+  return (typeof value === "string" && value.trim() !== "") || typeof value === "number";
 }

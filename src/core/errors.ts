@@ -45,7 +45,7 @@ export class ValidationError extends EcoCashError {
   }
 }
 
-/** The reference was already used. E005. */
+/** The reference was already used. E005, or an EPG "non unique externalReference" 400. */
 export class DuplicateReferenceError extends EcoCashError {
   constructor(message: string, options: EcoCashErrorOptions = {}) {
     super(message, options);
@@ -144,6 +144,9 @@ const CODE_TO_CLASS: Record<string, ErrorClass> = {
   TP40288: InvalidChannelCodeError,
   IC50103: RecipientNotWhitelistedError,
   "888803": TransactionNotFoundError,
+  // Instant Payments sandbox: refund or reversal rejected, e.g. "Reversal amount exceeds
+  // allowed amount" or "The transaction reference could not be found".
+  SVC0270: RefundNotAllowedError,
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -165,10 +168,20 @@ function str(value: unknown): string | undefined {
  */
 export function errorFromResponse(httpStatus: number | undefined, body: unknown): EcoCashError {
   const record = asRecord(body);
-  const code = record ? str(record.responseCode) ?? str(record.statusCode) ?? str(record.code) : undefined;
+  // Instant Payments also answers with { messageId, text }. messageId is a code such as
+  // SVC0270, or sometimes just the clientCorrelator, which is not a code.
+  const messageId = record ? str(record.messageId) : undefined;
+  const code = record
+    ? str(record.responseCode) ?? str(record.statusCode) ?? str(record.code) ??
+      (messageId && /^[A-Z]{2,}\d+$/.test(messageId) ? messageId : undefined)
+    : undefined;
   const message =
     (record &&
-      (str(record.message) ?? str(record.statusMessage) ?? str(record.responseMessage) ?? str(record.error))) ??
+      (str(record.message) ??
+        str(record.statusMessage) ??
+        str(record.responseMessage) ??
+        str(record.error) ??
+        str(record.text))) ??
     (typeof body === "string" && body.trim() !== "" ? body : undefined) ??
     `EcoCash request failed${httpStatus ? ` with HTTP ${httpStatus}` : ""}`;
 
@@ -176,6 +189,11 @@ export function errorFromResponse(httpStatus: number | undefined, body: unknown)
 
   if (code && CODE_TO_CLASS[code]) {
     return new CODE_TO_CLASS[code](message, options);
+  }
+  // EPG rejects a reused externalReference with a 400 and no code:
+  // "Errors occurred! Invalid or non unique externalReference: ..."
+  if (!code && /non[- ]?unique externalReference/i.test(message)) {
+    return new DuplicateReferenceError(message, options);
   }
   if (httpStatus === 401 || httpStatus === 403) return new AuthenticationError(message, options);
   if (httpStatus === 404) return new TransactionNotFoundError(message, options);

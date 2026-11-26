@@ -98,7 +98,10 @@ export interface Payment {
   phoneNumber?: string;
   ecocashReference?: string;
   originalEcocashReference?: string;
-  /** e.g. "Charged", "Refunded". */
+  /**
+   * EcoCash's transactionOperationStatus. In the sandbox a charge starts as
+   * "PENDING SUBSCRIBER VALIDATION" and becomes "COMPLETED" once the customer approves.
+   */
   status?: string;
   responseCode?: string;
   raw: InstantPaymentResponseBody;
@@ -138,7 +141,9 @@ export interface EpgConfig extends CommonConfig {
   merchantName?: string;
   /**
    * Extra attempts after a retryable error (timeout, 5xx). Default 0.
-   * Safe because EPG is idempotent on externalReference.
+   * EPG rejects a reused externalReference, so a resend cannot pay twice. If a resend
+   * finds the first attempt went through, the SDK returns that transaction from a
+   * lookup, with `recovered: true`.
    */
   retries?: number;
 }
